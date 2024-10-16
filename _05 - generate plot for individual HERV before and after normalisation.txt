@@ -1,0 +1,162 @@
+
+#######################
+# Input files preparation
+#######################
+
+srun -p cpu,interruptible_cpu -t 8:00:00 --mem=50000 --pty /bin/bash
+conda activate Renv_final_2
+mkdir -p /users/k1642468/commonmind/Rodrigo/neurodegen_rTWAS/expression_data
+
+R
+# set up variables  #### c("ERVLE_1p31.1c", "ERV316A3_2q33.1g","ERV316A3_5q14.3j","MER4_20q13.13", "ACTB", "RPL30")
+herv_of_interest <- "MER61_12q14.2"
+setwd("/users/k1642468/commonmind/Rodrigo/neurodegen_rTWAS/expression_data")
+trait_name <- "MS_EUR"
+twas_full <- paste0("/users/k1642468/commonmind/Rodrigo/neurodegen_rTWAS/rTWAS/EUR_all_1/results/",trait_name,"/",trait_name,"_____all_chr.tsv")
+plink_files <- "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/CMC_EUR_LDREF_3"
+gwas_file <- paste0("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ-copy/gwas/multitrait/",trait_name,".gwas.focus")
+
+# Load expression CMC data
+load("/scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/expression_data/environment_EUR_563_242.RDat") # /scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/expression_data/environment_EUR_563_242.RDat
+
+
+###################
+# Plot adjusted Z scores now # object is mat_adjusted
+###################
+library(data.table)
+# extract z score expression data from HERV and plot
+herv_of_interest_adjusted <- data.frame(mat_adjusted[herv_of_interest,])
+# herv_of_interest_adjusted <- data.frame(t(herv_of_interest_adjusted))
+head(herv_of_interest_adjusted)
+colnames(herv_of_interest_adjusted) <- "Expression"
+
+# now match expression file ID names with those in the genotype files 
+id_values <- fread("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_563_EUR_all.tsv", stringsAsFactors=F)
+id_values <- dplyr::select(id_values, "genotype_id","RNAseq_name")
+
+herv_of_interest_adjusted_genotype_ids <- merge(herv_of_interest_adjusted, id_values, by.x="row.names", by.y="RNAseq_name")
+
+# obtain genotypes
+# Identify variant who's top eQTL in FUSION results
+fusion_results <- fread(twas_full, stringsAsFactors=F, h=T)
+fusion_results <- data.frame(fusion_results)
+
+# eqtl_id <- "rs6090988"
+eqtl_id <- fusion_results[fusion_results$ID==herv_of_interest,"EQTL.ID"]
+
+# extract genotype information from individuals from plink file
+system(paste0("plink --bfile ", plink_files," --snps ", eqtl_id," --recode vcf --out ", eqtl_id,"_for_plotting"))
+
+# read results into R
+library(vcfR)
+vcf <- read.vcfR( paste0(eqtl_id,"_for_plotting.vcf"), verbose = FALSE ) # allele coding: 0=ref, 1=alt
+vcf_tidy <- vcfR2tidy(vcf)
+vcf_final <- data.frame(vcf_tidy$gt)
+splitting <- data.frame(do.call('rbind', strsplit(as.character(vcf_final$gt_GT_alleles),'/',fixed=TRUE)))
+vcf_final <- data.frame(vcf_final, splitting)
+vcf_final$X1 <- as.character(vcf_final$X1)
+vcf_final$X2 <- as.character(vcf_final$X2)
+
+# remove leading "0_" (plink is adding this re. family IDs - unused).
+vcf_final$Indiv <- sub("^0_", "", vcf_final$Indiv)
+
+# identify risk allele in GWAS
+gwas <- fread(gwas_file, stringsAsFactors=F)
+gwas$risk_allele <- ifelse(gwas$Z < 0,  gwas$A2, gwas$A1)
+risk_allele <- gwas[gwas$SNP==eqtl_id, ]
+print(risk_allele)
+risk_allele <- gwas[gwas$SNP==eqtl_id, "risk_allele"]
+print(paste0("risk allele of ", eqtl_id," is... ", risk_allele))
+
+# replace counts of alleles in vcf table; 0 risk alleles = 0, 1 risk allele = 1, 2 risk alleles = 2
+vcf_final$X1 <- ifelse ( vcf_final$X1==risk_allele$risk_allele, 1, 0 )
+vcf_final$X2 <- ifelse ( vcf_final$X2==risk_allele$risk_allele, 1, 0 )
+vcf_final$sum_of_risk_alleles <- vcf_final$X1 + vcf_final$X2
+
+vcf_final <- dplyr::select(vcf_final, "Indiv", "sum_of_risk_alleles")
+
+merged_vcf_final_mat_adjusted <- merge(vcf_final, herv_of_interest_adjusted_genotype_ids, by.x="Indiv", by.y="genotype_id")
+merged_vcf_final_mat_adjusted$sum_of_risk_alleles <- as.factor(merged_vcf_final_mat_adjusted$sum_of_risk_alleles)
+
+library(ggplot2)
+tiff(file=paste0(herv_of_interest," by ",eqtl_id," expression - Z scores - ", trait_name,".tiff"), width = 2000, height = 1600, units = "px", res=300,  compression = "lzw")
+ggplot(merged_vcf_final_mat_adjusted, aes(x=sum_of_risk_alleles, y=Expression, fill=sum_of_risk_alleles)) + 
+  theme_classic() +
+  geom_violin(trim=FALSE)+
+  geom_boxplot(width=0.1, fill="white")+
+  labs(x=paste0("Risk allele loading (", eqtl_id,")"), y =  paste0(herv_of_interest, " expression (Z score)"))+
+  theme(text = element_text(size = 15))  
+dev.off()
+
+
+
+###################
+# Plot non-adjusted (raw) values # object is counts_df
+###################
+library(data.table)
+# extract z score expression data from HERV and plot
+herv_of_interest_adjusted <- data.frame(counts_df[herv_of_interest,])
+herv_of_interest_adjusted <- data.frame(t(herv_of_interest_adjusted))
+head(herv_of_interest_adjusted)
+colnames(herv_of_interest_adjusted) <- "Expression"
+
+# now match expression file ID names with those in the genotype files 
+id_values <- fread("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_563_EUR_all.tsv", stringsAsFactors=F)
+id_values <- dplyr::select(id_values, "genotype_id","RNAseq_name")
+
+herv_of_interest_adjusted_genotype_ids <- merge(herv_of_interest_adjusted, id_values, by.x="row.names", by.y="RNAseq_name")
+
+# obtain genotypes
+# Identify variant who's top eQTL in FUSION results
+fusion_results <- fread(twas_full, stringsAsFactors=F, h=T)
+fusion_results <- data.frame(fusion_results)
+
+# eqtl_id <- "rs6090988"
+eqtl_id <- fusion_results[fusion_results$ID==herv_of_interest,"EQTL.ID"]
+
+# extract genotype information from individuals from plink file
+system(paste0("plink --bfile ", plink_files," --snps ", eqtl_id," --recode vcf --out ", eqtl_id,"_for_plotting"))
+
+# read results into R
+library(vcfR)
+vcf <- read.vcfR( paste0(eqtl_id,"_for_plotting.vcf"), verbose = FALSE ) # allele coding: 0=ref, 1=alt
+vcf_tidy <- vcfR2tidy(vcf)
+vcf_final <- data.frame(vcf_tidy$gt)
+splitting <- data.frame(do.call('rbind', strsplit(as.character(vcf_final$gt_GT_alleles),'/',fixed=TRUE)))
+vcf_final <- data.frame(vcf_final, splitting)
+vcf_final$X1 <- as.character(vcf_final$X1)
+vcf_final$X2 <- as.character(vcf_final$X2)
+
+# remove leading "0_" (plink is adding this re. family IDs - unused).
+vcf_final$Indiv <- sub("^0_", "", vcf_final$Indiv)
+
+# identify risk allele in GWAS
+gwas <- fread(gwas_file, stringsAsFactors=F)
+gwas$risk_allele <- ifelse(gwas$Z < 0,  gwas$A2, gwas$A1)
+risk_allele <- gwas[gwas$SNP==eqtl_id, ]
+print(risk_allele)
+risk_allele <- gwas[gwas$SNP==eqtl_id, "risk_allele"]
+print(paste0("risk allele of ", eqtl_id," is... ", risk_allele))
+
+# replace counts of alleles in vcf table; 0 risk alleles = 0, 1 risk allele = 1, 2 risk alleles = 2
+vcf_final$X1 <- ifelse ( vcf_final$X1==risk_allele$risk_allele, 1, 0 )
+vcf_final$X2 <- ifelse ( vcf_final$X2==risk_allele$risk_allele, 1, 0 )
+vcf_final$sum_of_risk_alleles <- vcf_final$X1 + vcf_final$X2
+
+vcf_final <- dplyr::select(vcf_final, "Indiv", "sum_of_risk_alleles")
+
+merged_vcf_final_mat_adjusted <- merge(vcf_final, herv_of_interest_adjusted_genotype_ids, by.x="Indiv", by.y="genotype_id")
+merged_vcf_final_mat_adjusted$sum_of_risk_alleles <- as.factor(merged_vcf_final_mat_adjusted$sum_of_risk_alleles)
+
+library(ggplot2)
+tiff(file=paste0(herv_of_interest," by ",eqtl_id," expression - raw values - ", trait_name,".tiff"), width = 2000, height = 1600, units = "px", res=300,  compression = "lzw")
+ggplot(merged_vcf_final_mat_adjusted, aes(x=sum_of_risk_alleles, y=Expression, fill=sum_of_risk_alleles)) + 
+  theme_classic() +
+  geom_violin(trim=FALSE)+
+  geom_boxplot(width=0.1, fill="white")+
+  labs(x=paste0("Risk allele loading (", eqtl_id,")"), y =  paste0(herv_of_interest, " expression (raw expression)"))+
+  theme(text = element_text(size = 15))  
+dev.off()
+
+
+

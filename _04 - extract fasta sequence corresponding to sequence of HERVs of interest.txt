@@ -1,0 +1,43 @@
+
+################
+# Get sequences from hg38 HERV annotations 
+################
+mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gtf_to_fasta && cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gtf_to_fasta
+wget https://github.com/mlbendall/telescope_annotation_db/raw/master/builds/HERV_rmsk.hg38.v2/genes.gtf
+# replace "gene" with HERV name (in 4th col)
+conda activate Renv_final
+R
+	annot <- read.table("genes.gtf", sep="\t", h=F, stringsAsFactors=F)
+	annot$INDEX <- paste0(annot$V1, "_",annot$V4, "_",annot$V5)
+	library(tidyr)
+	library(dplyr)
+	new_annot <- annot %>% separate(V9, into=c("empty","hervid"), sep = '[; ]')
+	new_annot <- new_annot %>% select(hervid, INDEX) 
+ merged <- merge(annot, new_annot, by.x="INDEX", by.y="INDEX")
+ merged <- select(merged, V1,V2, hervid, V4,V5,V6,V7,V8,V9)
+write.table(merged, "genes_relabel.gtf", quote=F, sep="\t", row.names=F, col.names=F)
+
+conda activate general
+wget https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/hg38.fa.gz
+bgzip -d hg38.fa.gz # decompress
+samtools faidx hg38.fa # create "fai" index file for fasta
+bedtools getfasta -fo herv_hg38_v2 -s -name -fi hg38.fa -bed genes_relabel.gtf # -fo output file; -fi input file; -s output sequences will be in positive strand only 
+cat herv_hg38_v2 |  cut -f1 -d":" > herv_hg38_v2_sequences.fasta
+
+# To see a sequence, you can use grep to match the herv id, using the flag -A 1 (show the 1st line after the match). E.g., 
+grep -A 1 "ERVLE_1p36.32a" /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gtf_to_fasta/herv_hg38_v2_sequences.fasta > ~/ERVLE_1p36.32a
+grep -A 1 "MER61_12q14.2" /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gtf_to_fasta/herv_hg38_v2_sequences.fasta > ~/MER61_12q14.2
+
+# Analyse the content of this file on Pfam,
+
+# Extract positions from HERVs from hg38 (this is useful for UCSC browser)
+grep "ERVLE_1p36.32a\|MER61_12q14.2" /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gene_and_herv_annotations/HERV_genes_hg38_0_unlifted.bed 
+chr1    2637771 2638501 ERVLE_1p36.32a  +
+chr12   64347628        64352825        MER61_12q14.2   +
+
+# Sequences lifted to hg19 for rTWASs
+grep "ERVLE_1p36.32a\|MER61_12q14.2" /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_563_EUR_all/coordinates_file_genes_and_hervs_hg19_563_EUR_all.txt
+1 2569210 2569940 ERVLE_1p36.32a
+12 64741408 64746605 MER61_12q14.2
+
+
